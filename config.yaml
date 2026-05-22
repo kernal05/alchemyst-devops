@@ -1,0 +1,46 @@
+# iii engine configuration — Docker-ready (no hardcoded host paths)
+workers:
+  - name: iii-observability
+    config:
+      enabled: true
+      service_name: iii
+      exporter: memory
+      memory_max_spans: 10000
+      metrics_enabled: true
+      metrics_exporter: memory
+      logs_enabled: true
+      logs_exporter: memory
+      logs_console_output: true
+      sampling_ratio: 1.0
+
+  - name: iii-queue
+    config:
+      adapter:
+        name: builtin
+
+  - name: iii-state
+    config:
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: /app/data/state_store.db   # Docker volume mount
+
+  - name: iii-http
+    config:
+      port: 3111
+      host: 0.0.0.0          # must bind 0.0.0.0 inside Docker (was 127.0.0.1)
+      default_timeout: 30000
+      concurrency_request_limit: 1024
+      cors:
+        allowed_origins:
+          - "*"
+        allowed_methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+
+  # Workers connect over the Docker network — no worker_path needed here
+  # (worker_path is only used when the engine spawns workers itself)

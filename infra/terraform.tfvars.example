@@ -1,0 +1,5 @@
+project_id             = "my-gcp-project-id"
+region                 = "us-central1"
+zone                   = "us-central1-a"
+gateway_machine_type   = "e2-standard-2"
+inference_machine_type = "c2-standard-8"

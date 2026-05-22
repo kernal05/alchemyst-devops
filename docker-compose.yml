@@ -1,0 +1,62 @@
+version: "3.9"
+
+networks:
+  iii-net:
+    driver: bridge
+
+volumes:
+  state-data:
+
+services:
+  # ── iii engine (RPC bus + HTTP gateway) ─────────────────────────────────────
+  iii-engine:
+    image: ghcr.io/alchemyst-ai/iii:latest
+    container_name: iii-engine
+    networks: [iii-net]
+    ports:
+      - "49134:49134"   # WebSocket RPC bus  (workers connect here)
+      - "3111:3111"     # HTTP API gateway   (curl / clients hit here)
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - state-data:/app/data
+    environment:
+      III_CONFIG: /app/config.yaml
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3111/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── inference-worker (Python / Gemma 3 270M GGUF) ───────────────────────────
+  inference-worker:
+    build:
+      context: ./workers/inference-worker
+      dockerfile: Dockerfile
+    container_name: inference-worker
+    networks: [iii-net]
+    environment:
+      III_URL: ws://iii-engine:49134
+    depends_on:
+      iii-engine:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 8g
+          cpus: "4"
+
+  # ── caller-worker (TypeScript / Node) ───────────────────────────────────────
+  caller-worker:
+    build:
+      context: ./workers/caller-worker
+      dockerfile: Dockerfile
+    container_name: caller-worker
+    networks: [iii-net]
+    environment:
+      III_URL: ws://iii-engine:49134
+    depends_on:
+      iii-engine:
+        condition: service_healthy
+    restart: unless-stopped

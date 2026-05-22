@@ -1,0 +1,11 @@
+name: math-worker
+runtime:
+  language: python
+  package_manager: pip
+  entry: inference_worker.py
+scripts:
+  install: "pip install -r requirements.txt"
+  start: "python inference_worker.py"
+resources:
+  memory: 8192
+  cpus: 4
