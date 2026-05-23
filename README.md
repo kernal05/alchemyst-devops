@@ -241,3 +241,30 @@ docker compose build --progress=plain inference-worker
 sudo lsof -i :3111
 # Change the host port in docker-compose.yml: "3112:3111"
 ```
+
+---
+
+## Production Hardening & Scale Considerations
+
+### What I would harden before production
+
+**Security:** Terminate TLS at an ALB with ACM certificate. Add JWT authentication middleware. Restrict SSH to bastion IP only. Move secrets to AWS Secrets Manager.
+
+**Reliability:** Replace process management with systemd units for auto-restart. Add CloudWatch alarms on CPU and API error rates.
+
+**Data:** Swap SQLite for ElastiCache Redis or RDS.
+
+**Observability:** Ship traces to AWS X-Ray via OTLP exporter. Aggregate logs in CloudWatch.
+
+### What I would do differently if the model were 100x larger
+
+A 27B model in FP16 needs ~54GB VRAM. Changes required:
+
+- Move to GPU instance (g4dn.12xlarge, 4x T4, 64GB VRAM)
+- Use vLLM or TGI for serving with continuous batching
+- Use FP8/GPTQ quantization to halve memory footprint
+- Add iii-queue to buffer requests during GPU saturation
+- Autoscale inference fleet via EC2 Auto Scaling Group on queue depth
+- Use Spot Instances for ~60% cost reduction
+
+The RPC interface stays identical — only inference_worker.py changes.
