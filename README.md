@@ -1,4 +1,4 @@
-# Alchemyst AI — DevOps Intern Assignment
+# Alchemyst AI 
 
 A containerised, production-ready deployment of the **iii** multi-worker inference system, running a **Gemma 3 270M GGUF** model exposed as an OpenAI-compatible HTTP endpoint.
 
