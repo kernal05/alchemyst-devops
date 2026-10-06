@@ -1,8 +1,6 @@
-# Alchemyst AI 
+# Alchemyst AI — Containerised Inference Deployment
 
-A containerised, production-ready deployment of the **iii** multi-worker inference system, running a **Gemma 3 270M GGUF** model exposed as an OpenAI-compatible HTTP endpoint.
-
----
+A containerised deployment of the **iii** multi-worker inference system, running a Gemma 3 270M GGUF model exposed as an OpenAI-compatible HTTP endpoint. It runs locally with Docker Compose and is deployed to **AWS** with Terraform.
 
 ## Architecture
 
@@ -39,44 +37,34 @@ A containerised, production-ready deployment of the **iii** multi-worker inferen
                         └─────────────────────────────────────────┘
 ```
 
-**Request flow:**
-1. HTTP POST hits `iii-engine` on port `3111`
-2. Engine routes to `caller-worker` → `http::run_inference_over_http`
-3. Caller-worker triggers `inference::get_response` (itself)
-4. That triggers `inference::run_inference` on inference-worker
-5. Python runs Gemma 3 via HuggingFace Transformers, returns the generated text
-6. Response bubbles back up as JSON
+**Request flow**
 
----
+1. An HTTP POST hits `iii-engine` on port 3111.
+2. The engine routes it to `caller-worker` → `http::run_inference_over_http`.
+3. The caller worker triggers `inference::get_response` (itself).
+4. That triggers `inference::run_inference` on the `inference-worker`.
+5. The Python worker generates the text and returns it.
+6. The response bubbles back up as JSON.
 
-## Quick Start (Ubuntu local)
+## Quick start (local, Docker Compose)
 
-### Prerequisites
-- Docker Engine ≥ 24 + Docker Compose plugin
-- 8 GB free RAM (for the GGUF model)
-- 20 GB disk (model + images)
-
-### 1. Clone and launch
+**Prerequisites:** Docker Engine ≥ 24 with the Compose plugin, about 8 GB of free RAM, and about 20 GB of disk (model plus images).
 
 ```bash
-git clone https://github.com/YOUR_ORG/alchemyst-devops.git
+git clone https://github.com/kernal05/alchemyst-devops.git
 cd alchemyst-devops
 docker compose up --build
 ```
 
-The first build downloads the `gemma-3-270m-Q8_0.gguf` model (~270 MB). Subsequent starts use the cached layer.
+The first build downloads the `gemma-3-270m-Q8_0.gguf` model (~270 MB) and bakes it into the image layer, so later starts are fast.
 
-### 2. Verify all containers are up
+Check that the containers are up:
 
 ```bash
 docker compose ps
-# NAME               STATUS
-# iii-engine         Up (healthy)
-# inference-worker   Up
-# caller-worker      Up
 ```
 
-### 3. Send a request
+Send a request:
 
 ```bash
 curl -s -X POST http://localhost:3111/v1/chat/completions \
@@ -88,183 +76,140 @@ curl -s -X POST http://localhost:3111/v1/chat/completions \
   }' | jq .
 ```
 
-**Expected response shape:**
-```json
-{
-  "result": {
-    "success": "You've connected two workers...",
-    "<model_output>": "A transformer model is..."
-  }
-}
-```
+The response is a JSON object with a `result` field containing the generated text.
 
-### 4. Tear down
+Tear down (the `-v` flag also removes the state volume):
 
 ```bash
-docker compose down -v    # -v also removes the state volume
+docker compose down -v
 ```
 
----
-
-## Project Structure
+## Project structure
 
 ```
 alchemyst-devops/
 ├── docker-compose.yml                  # Local orchestration
 ├── config.yaml                         # iii engine config (Docker-safe)
 ├── workers/
-│   ├── inference-worker/
-│   │   ├── Dockerfile
-│   │   ├── inference_worker.py         # Registers inference::run_inference
-│   │   ├── requirements.txt
-│   │   └── iii.worker.yaml
-│   └── caller-worker/
-│       ├── Dockerfile
-│       ├── src/worker.ts               # Registers http + get_response functions
-│       ├── package.json
-│       ├── tsconfig.json
-│       └── iii.worker.yaml
+│   ├── inference-worker/               # Python worker: inference::run_inference
+│   └── caller-worker/                  # TypeScript worker: HTTP + get_response
 ├── infra/
-│   ├── main.tf                         # GCP: VPC, VMs, NAT, firewall
+│   ├── main.tf                         # AWS: VPC, subnets, NAT, security groups, EC2
 │   ├── variables.tf
 │   └── terraform.tfvars.example
 ├── scripts/
-│   ├── setup-gateway.sh               # Cloud-init: installs Docker, starts engine
-│   └── setup-worker.sh               # Cloud-init: starts inference worker
+│   ├── setup-gateway.sh                # Instance bootstrap: installs Docker, starts engine
+│   └── setup-worker.sh                 # Instance bootstrap: starts inference worker
 └── README.md
 ```
 
----
+## AWS deployment (Terraform)
 
-## GCP Deployment (Terraform)
-
-### Prerequisites
-- `terraform` ≥ 1.6
-- `gcloud` CLI authenticated
-- GCP project with Compute Engine API enabled
-
-### Steps
+**Prerequisites:** Terraform ≥ 1.6, the AWS CLI configured with valid credentials, and permission to create VPC and EC2 resources.
 
 ```bash
 cd infra
 cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars — set your project_id
+# Edit terraform.tfvars: set your region, key pair and instance types
 
 terraform init
 terraform plan
 terraform apply
 ```
 
-After apply, Terraform prints the gateway's public IP:
+`terraform.tfvars` and `*.tfstate` are git-ignored and must never be committed.
 
-```
-gateway_public_ip = "34.x.x.x"
-```
-
-Hit the API:
-
-```bash
-curl -X POST http://34.x.x.x:3111/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"messages": [{"role": "user", "content": "Hello!"}]}'
-```
-
-### Infrastructure overview
+### What Terraform creates
 
 | Resource | Purpose |
 |---|---|
-| `iii-vpc` + `iii-subnet` | Isolated private network `10.10.0.0/24` |
-| Cloud Router + NAT | Outbound internet for private VMs (pip/npm/HuggingFace) |
-| `iii-gateway` VM (e2-standard-2) | Runs `iii-engine` + `caller-worker`; has public IP |
-| `iii-inference` VM (c2-standard-8) | Runs `inference-worker`; private only |
-| Firewall `allow-internal` | All TCP within subnet |
-| Firewall `allow-http-gateway` | Ports 3111, 22 from internet → gateway only |
-| Service Account | Least-privilege SA for both VMs |
+| VPC (`10.10.0.0/16`) | Isolated network |
+| Public subnet + Internet Gateway | Hosts the gateway instance |
+| Private subnet | Hosts the inference instance, no public IP |
+| Elastic IP + NAT Gateway | Outbound internet for the private subnet (package installs, model downloads) |
+| Public and private route tables | Route traffic for each subnet |
+| Security group: gateway | Controls inbound access to the gateway |
+| Security group: inference | Controls inbound access to the inference instance |
+| Key pair | SSH access |
+| EC2 instance: gateway | Runs `iii-engine` and `caller-worker` |
+| EC2 instance: inference | Runs `inference-worker` |
 
----
+Instance sizes are set in `variables.tf` (`gateway_instance_type`, `inference_instance_type`).
 
-## Key Design Decisions
+### Design note: AWS to GCP mapping (not built)
 
-### Why Docker Compose for local?
-Docker Compose gives a single-command local environment with a shared bridge network, matching the production topology (engine in the middle, workers as peers). The `depends_on: condition: service_healthy` ensures workers don't connect before the engine's WebSocket bus is ready.
+The application itself is cloud-agnostic, since it is Docker plus a WebSocket bus. Only `infra/` is AWS-specific. A GCP port would map like this. This is a design note and has not been implemented or tested.
 
-### The `host: 0.0.0.0` fix in config.yaml
-The original `config.yaml` had `host: 127.0.0.1` for `iii-http`. Inside Docker, this binds only to the container loopback — the port would never be reachable from outside the container. Changed to `0.0.0.0` so the engine accepts connections on all interfaces.
-
-### Worker paths removed from config.yaml
-The original config used `worker_path: /Users/anuran/...`. In Docker/GCP those paths don't exist. Workers connect autonomously over WebSocket using the `III_URL` env var — no `worker_path` stanza needed.
-
-### Model pre-downloaded at build time
-The `Dockerfile` runs `hf_hub_download` during `docker build`. This means:
-- First build is slow but the model is baked into the image layer
-- Container starts in seconds (no runtime download)
-- Image is portable and reproducible
-
-### GCP split: gateway vs inference VM
-The `iii-engine` is lightweight; the inference workload is CPU/RAM intensive. Splitting them allows independent scaling — you can upgrade the inference VM (or add a GPU) without touching the gateway. The inference VM has no public IP (attack surface reduction); it reaches HuggingFace via Cloud NAT.
-
----
-
-## Production Hardening Checklist
-
-| Area | Recommendation |
+| AWS (deployed) | GCP equivalent |
 |---|---|
-| **Auth** | Add an API key / JWT middleware in front of the `iii-http` port; the current setup has no auth |
-| **TLS** | Terminate HTTPS at a load balancer (Cloud Load Balancing or nginx) — never expose plain HTTP from a public IP in production |
-| **Secrets** | Use GCP Secret Manager for any API keys; inject via env at runtime, not baked into images |
-| **Image registry** | Push images to Google Artifact Registry; use digest pinning, not `:latest` |
-| **Resource limits** | `docker-compose.yml` already caps inference at 8 GB / 4 CPUs; tune to your VM size |
-| **Health checks** | Engine has a `/health` endpoint; add liveness probes to worker containers |
-| **Logging** | `iii-observability` is configured with in-memory OTLP; swap `exporter: memory` → `exporter: otlp` and point to Cloud Trace / Grafana in prod |
-| **State backup** | The SQLite `state_store.db` lives on a Docker volume; back it up or swap the adapter to a managed DB (e.g., Cloud Spanner, Redis) |
-| **Firewall** | Lock port 22 down to your IP range (not `0.0.0.0/0`) in `infra/main.tf` |
-| **IAM** | Follow least-privilege; the current SA has `cloud-platform` scope — tighten to only required APIs |
+| VPC + subnets | VPC + subnets |
+| NAT Gateway | Cloud NAT |
+| Security groups | Firewall rules |
+| EC2 instances | Compute Engine VMs |
+| IAM role / instance profile | Service account |
+| ALB + ACM | Cloud Load Balancing + managed certificate |
+| Secrets Manager | Secret Manager |
+| CloudWatch / X-Ray | Cloud Monitoring / Cloud Trace |
 
----
+## Key design decisions
+
+**Docker Compose for local.** One command gives a shared bridge network that mirrors the deployed topology, with the engine in the middle and workers as peers. `depends_on: condition: service_healthy` stops workers from connecting before the engine's WebSocket bus is ready.
+
+**`host: 0.0.0.0` in `config.yaml`.** The original config bound the HTTP server to `127.0.0.1`. Inside Docker that is the container's own loopback, so the port was unreachable from outside. Changing it to `0.0.0.0` makes the engine accept connections on all interfaces.
+
+**Worker paths removed from `config.yaml`.** The original config contained absolute paths from the author's machine. Workers connect over WebSocket using the `III_URL` environment variable, so no `worker_path` entries are needed.
+
+**Model downloaded at build time.** The Dockerfile fetches the model during `docker build`. The first build is slower, but the image is portable and reproducible, and containers start in seconds with no runtime download.
+
+**Gateway and inference split.** The engine is lightweight, while inference is CPU and RAM heavy. Separate instances let them scale independently, and the inference instance has no public IP, which reduces the attack surface. It reaches the internet only through the NAT Gateway.
+
+## Production hardening (not yet implemented)
+
+This is a working deployment, not a hardened one. Before production I would add:
+
+| Area | What I would change |
+|---|---|
+| Auth | API key or JWT validation in front of port 3111. There is currently none. |
+| TLS | Terminate HTTPS at an Application Load Balancer with an ACM certificate. Never expose plain HTTP publicly. |
+| SSH | Restrict port 22 to a known IP range or remove it and use SSM Session Manager. |
+| IAM | Least-privilege instance role scoped to the APIs actually needed. |
+| Secrets | AWS Secrets Manager, injected at runtime and never baked into images. |
+| Images | Push to ECR and pin by digest instead of `:latest`. |
+| Reliability | Run containers under systemd or an orchestrator for restarts. Add liveness checks for workers and CloudWatch alarms on CPU and error rate. |
+| State | Replace the SQLite volume with a managed store (for example ElastiCache Redis) or back the volume up. |
+| Observability | Switch `exporter: memory` to an OTLP exporter and send traces to X-Ray or Grafana. Aggregate logs in CloudWatch. |
+
+## If the model were 100x larger
+
+A 100x larger model (about 27B parameters) needs roughly 54 GB of memory in FP16, so the serving layer changes:
+
+- Move inference to a multi-GPU instance (for example `g5.12xlarge`, 4x A10G, or `g4dn.12xlarge`, 4x T4).
+- Serve with vLLM or TGI for continuous batching.
+- Use FP8 or GPTQ quantization to roughly halve the memory footprint.
+- Use `iii-queue` to buffer requests while GPUs are saturated.
+- Autoscale the inference fleet with an Auto Scaling Group driven by queue depth.
+- Use Spot Instances for non-critical load to cut cost.
+
+The RPC interface stays the same. Only the inference worker changes.
 
 ## Troubleshooting
 
-**Workers not connecting to engine?**
+Workers not connecting to the engine:
+
 ```bash
-docker compose logs iii-engine     # check it's listening on 49134
-docker compose logs caller-worker  # look for "WebSocket connected"
+docker compose logs iii-engine       # check it is listening on 49134
+docker compose logs caller-worker    # look for a WebSocket connection message
 ```
 
-**Model download fails?**
+Model download fails:
+
 ```bash
-# Build with verbose output
 docker compose build --progress=plain inference-worker
 ```
 
-**Port 3111 already in use?**
+Port 3111 already in use:
+
 ```bash
 sudo lsof -i :3111
-# Change the host port in docker-compose.yml: "3112:3111"
+# Change the host port in docker-compose.yml, for example "3112:3111"
 ```
-
----
-
-## Production Hardening & Scale Considerations
-
-### What I would harden before production
-
-**Security:** Terminate TLS at an ALB with ACM certificate. Add JWT authentication middleware. Restrict SSH to bastion IP only. Move secrets to AWS Secrets Manager.
-
-**Reliability:** Replace process management with systemd units for auto-restart. Add CloudWatch alarms on CPU and API error rates.
-
-**Data:** Swap SQLite for ElastiCache Redis or RDS.
-
-**Observability:** Ship traces to AWS X-Ray via OTLP exporter. Aggregate logs in CloudWatch.
-
-### What I would do differently if the model were 100x larger
-
-A 27B model in FP16 needs ~54GB VRAM. Changes required:
-
-- Move to GPU instance (g4dn.12xlarge, 4x T4, 64GB VRAM)
-- Use vLLM or TGI for serving with continuous batching
-- Use FP8/GPTQ quantization to halve memory footprint
-- Add iii-queue to buffer requests during GPU saturation
-- Autoscale inference fleet via EC2 Auto Scaling Group on queue depth
-- Use Spot Instances for ~60% cost reduction
-
-The RPC interface stays identical — only inference_worker.py changes.
